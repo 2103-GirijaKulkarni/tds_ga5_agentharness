@@ -26,24 +26,42 @@ async def classify(request: Request):
         return JSONResponse(status_code=400, content={"error": "invalid JSON"})
 
     if payload.get("profile") != PROFILE:
-        return JSONResponse(status_code=400, content={"error": "unsupported profile"})
+        return JSONResponse(
+            status_code=400,
+            content={"error": "unsupported profile"},
+        )
 
     batch_id = payload.get("batchId")
     cases = payload.get("cases", [])
 
     if not isinstance(batch_id, str) or not batch_id:
-        return JSONResponse(status_code=400, content={"error": "invalid batchId"})
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid batchId"},
+        )
 
     if not isinstance(cases, list):
-        return JSONResponse(status_code=400, content={"error": "invalid cases"})
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid cases"},
+        )
 
     case_ids = [case.get("caseId") for case in cases]
 
-    if any(not isinstance(case_id, str) or not case_id for case_id in case_ids):
-        return JSONResponse(status_code=400, content={"error": "missing case ID"})
+    if any(
+        not isinstance(case_id, str) or not case_id
+        for case_id in case_ids
+    ):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "missing case ID"},
+        )
 
     if len(case_ids) != len(set(case_ids)):
-        return JSONResponse(status_code=400, content={"error": "duplicate case ID"})
+        return JSONResponse(
+            status_code=400,
+            content={"error": "duplicate case ID"},
+        )
 
     return JSONResponse(
         content={
