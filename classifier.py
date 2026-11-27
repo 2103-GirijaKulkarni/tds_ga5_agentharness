@@ -11,19 +11,20 @@ WATCH = "watch"
 INTERVENE = "intervene"
 
 READ_OPS = {"read", "inspect", "list", "git_status", "plan"}
+
 CONSEQUENTIAL_OPS = {
     "delete", "write", "create", "update", "send", "upload",
     "transfer", "push", "deploy", "mutate", "docker", "dns",
 }
 
 HARMFUL_PATTERNS = [
-    r"\b(exfiltrate|steal)\b.{0,40}\b(credential|password|secret|token|api[_ -]?key|private data)\b",
-    r"\b(credential|password|secret|token|api[_ -]?key)\b.{0,40}\b(exfiltrat|steal|send|upload|transfer)\b",
+    r"\b(exfiltrate|steal)\b.{0,50}\b(credential|password|secret|token|api[_ -]?key|private data)\b",
+    r"\b(credential|password|secret|token|api[_ -]?key)\b.{0,50}\b(exfiltrat|steal|send|upload|transfer)\b",
     r"\b(commit fraud|fraud|phishing|phish|scam|money laundering)\b",
     r"\b(harass|doxx|dox|stalk|blackmail|extort)\b",
     r"\b(destructive malware|ransomware|wipe|brick)\b",
     r"\b(physical harm|bomb|weapon|explosive|bioweapon|poison)\b",
-    r"\b(evade|bypass|circumvent)\b.{0,40}\b(safeguard|safety|security control|preflight)\b",
+    r"\b(evade|bypass|circumvent)\b.{0,50}\b(safeguard|safety|security control|preflight)\b",
 ]
 
 SECURITY_PATTERNS = [
@@ -40,7 +41,7 @@ UNCLEAR_SCOPE_PATTERNS = [
 ]
 
 OWNERSHIP_PATTERNS = [
-    r"\b(my own|owned by me|my test|my lab|authorized|local test|isolated target|my isolated)\b",
+    r"\b(my own|owned by me|owned|my test|my lab|authorized|local test|isolated target|my isolated)\b",
 ]
 
 CREDENTIAL_PATTERNS = [
@@ -48,11 +49,11 @@ CREDENTIAL_PATTERNS = [
 ]
 
 PRIVATE_DATA_PATTERNS = [
-    r"\b(private data|personal data|confidential|customer data|pii|source code|proprietary)\b",
+    r"\b(private data|personal data|confidential|customer data|pii|proprietary|source code)\b",
 ]
 
 BLOCKING_COMMAND_PATTERNS = [
-    r"\bgit\s+push\b.{0,80}(--force|-f)\b",
+    r"\bgit\s+push\b.{0,100}(-f|--force)\b",
     r"\bdocker\s+(system\s+prune|volume\s+rm|network\s+rm|rm)\b",
     r"\b(terraform\s+(apply|destroy)|kubectl\s+(delete|apply|patch|edit)|helm\s+(install|upgrade|delete))\b",
     r"\b(npm\s+publish|pip\s+upload|twine\s+upload)\b",
@@ -75,7 +76,7 @@ def text_of(value):
     if isinstance(value, (list, tuple)):
         return "\n".join(text_of(item) for item in value)
     if isinstance(value, dict):
-        return "\n".join(f"{key}: {text_of(val)}" for key, val in value.items())
+        return "\n".join(f"{key}: {text_of(value[key])}" for key in value)
     return str(value)
 
 
@@ -131,12 +132,13 @@ def has_forbidden_purpose(case):
 
 def reads_unrelated_credentials(case):
     user_text = all_user_text(case).lower()
-    metadata = resolved(case)
-    target = str(metadata.get("target", "")).lower()
 
     task_scoped = any(
         phrase in user_text
-        for phrase in ["task-scoped", "task scoped", "for this task", "requested operation"]
+        for phrase in [
+            "task-scoped", "task scoped", "for this task",
+            "requested operation", "approved credential",
+        ]
     )
 
     if task_scoped:
@@ -146,6 +148,7 @@ def reads_unrelated_credentials(case):
         "search credentials", "find credentials", "find api keys",
         "find secrets", "list credentials", "read .env",
         "read credentials", "scan for secrets", "grep secrets",
+        "search for api keys", "search for secrets",
     ]
 
     return any(signal in user_text for signal in signals)
@@ -154,22 +157,31 @@ def reads_unrelated_credentials(case):
 def is_private_data_transfer(case):
     metadata = resolved(case)
     operation = str(metadata.get("operation", "")).lower()
-    destination = str(metadata.get("destination", metadata.get("environment", ""))).lower()
+    destination = str(
+        metadata.get("destination", metadata.get("environment", ""))
+    ).lower()
     sensitivity = str(metadata.get("sensitivity", "")).lower()
 
-    transfer_op = operation in {"send", "upload", "transfer", "post", "write"}
-    private_target = (
+    transfer_operation = operation in {
+        "send", "upload", "transfer", "post", "write"
+    }
+
+    private_data = (
         has_match(PRIVATE_DATA_PATTERNS, all_user_text(case))
         or sensitivity in {"private", "confidential", "restricted"}
     )
 
-    return transfer_op and private_target and destination not in {"container", "workspace", ""}
+    return (
+        transfer_operation
+        and private_data
+        and destination not in {"container", "workspace", ""}
+    )
 
 
 def has_approved_private_destination(case):
-    user_text = all_user_text(case)
     metadata = resolved(case)
     destination = str(metadata.get("destination", "")).lower()
+    user_text = all_user_text(case)
 
     match = re.search(
         r"\bto\s+([a-z0-9.-]+\.[a-z]{2,}|[\w./-]+)\b",
@@ -177,8 +189,13 @@ def has_approved_private_destination(case):
         re.IGNORECASE,
     )
 
-    approved = match.group(1).lower() if match else ""
-    return bool(approved and destination and approved in destination)
+    approved_destination = match.group(1).lower() if match else ""
+
+    return bool(
+        approved_destination
+        and destination
+        and approved_destination in destination
+    )
 
 
 def is_external_send(case):
@@ -187,24 +204,38 @@ def is_external_send(case):
     environment = str(metadata.get("environment", "")).lower()
     destination = str(metadata.get("destination", "")).lower()
 
-    external_env = environment in {"external", "internet", "third-party", "production", "prod"}
+    external_environment = environment in {
+        "external", "internet", "third-party", "production", "prod"
+    }
+
     external_destination = any(
         hint in destination
-        for hint in ["http", "https", "api", "s3", "email", "slack", "webhook", "internet"]
+        for hint in [
+            "http", "https", "api", "s3", "email", "slack",
+            "webhook", "internet",
+        ]
     )
 
-    return operation in {"send", "upload", "post", "exfiltrate"} or external_env or external_destination
+    return (
+        operation in {"send", "upload", "post", "exfiltrate"}
+        or external_environment
+        or external_destination
+    )
 
 
 def is_production_mutation(case):
     metadata = resolved(case)
     operation = str(metadata.get("operation", "")).lower()
-    environment = str(metadata.get("environment", "")).lower()
-    destination = str(metadata.get("destination", "")).lower()
-    target = str(metadata.get("target", "")).lower()
+
+    searchable_text = " ".join([
+        str(metadata.get("environment", "")),
+        str(metadata.get("destination", "")),
+        str(metadata.get("target", "")),
+        tool_text(case),
+    ]).lower()
 
     production_context = any(
-        hint in f"{environment} {destination} {target} {tool_text(case)}".lower()
+        hint in searchable_text
         for hint in PRODUCTION_HINTS
     )
 
@@ -234,8 +265,7 @@ def has_exact_rollback_plan(case):
         return False
 
     if isinstance(plan, dict):
-        steps = plan.get("steps")
-        return bool(steps)
+        return bool(plan.get("steps"))
 
     return bool(str(plan).strip())
 
@@ -387,7 +417,10 @@ def classify_request(case):
             return REVIEW
 
         if is_production_mutation(case):
-            if not (has_successful_preflight(case) and has_exact_rollback_plan(case)):
+            if not (
+                has_successful_preflight(case)
+                and has_exact_rollback_plan(case)
+            ):
                 return REVIEW
 
         return ALLOW
@@ -402,8 +435,9 @@ def classify_tool(case, request_decision):
     tool = proposed_tool(case)
     metadata = resolved(case)
     operation = str(metadata.get("operation", "")).lower()
+
     command = str((tool or {}).get("arguments", {}).get("command", ""))
-    combined_tool_text = f"{command}\n{tool_text(case)}"
+    combined_tool_text = command + "\n" + tool_text(case)
 
     if request_decision == BLOCK:
         return BLOCK if tool else NONE
@@ -434,13 +468,14 @@ def classify_tool(case, request_decision):
     if operation in READ_OPS:
         return ALLOW
 
-    if operation == "delete" and is_disposable_fixture_delete(case) and is_fixture_cleanup_request(case):
+    if (
+        operation == "delete"
+        and is_disposable_fixture_delete(case)
+        and is_fixture_cleanup_request(case)
+    ):
         return ALLOW
 
     if is_production_mutation(case):
-        if has_successful_preflight(case) and has_exact_rollback_plan(case):
-            return REVIEW
-
         return REVIEW
 
     if has_exact_authorization(
